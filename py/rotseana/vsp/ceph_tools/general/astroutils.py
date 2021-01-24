@@ -7,6 +7,7 @@ from math import sin, cos, radians, trunc
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.io import readsav
+from scipy.signal import savgol_filter, savgol_coeffs
 from astropy.io import fits
 
 def evaluateBooleanArg(argument):
@@ -16,7 +17,7 @@ def evaluateBooleanArg(argument):
         argument = False
     return argument
 
-def main(file, rightAscension, declination, decimalCoords, convertHjd, truncateHjd, period, epoch, plot, save, verbose):
+def main(file, rightAscension, declination, convertHjd, truncateHjd, period, epoch, plot, save, verbose):
     def openFile(file):
         data = list(open(file).read().splitlines())
         data = [x.split() for x in data]
@@ -110,13 +111,9 @@ def main(file, rightAscension, declination, decimalCoords, convertHjd, truncateH
         matchs, lightCurve = findTarget(rightAscension, declination, matchStructures)
         return lightCurve
 
-    def getR1Night(lightcurve, nights, epochindex):
-        rounded_lightcurve = []
-        night_count = [0]
-        for x in range(len(lightcurve) - 1):
-            if int(lightcurve[x][epochindex]) != int(lightcurve[x + 1][epochindex]):
-                night_count.append(x + 1)
-        final_lightcurve = [n for x in nights for n in lightcurve[night_count[x - 1]:night_count[x]]]
+    def getR1Night(lightCurve, nights):
+        nightIndices = [0] + [x + 1 for x in range(len(lightCurve[:len(lightCurve) - 1])) if lightCurve[x + 1][0] - lightCurve[x][0] < 1]
+        final_lightcurve = [n for x in nights for n in lightCurve[nightIndices[x - 1]:nightIndices[x]]]
         return final_lightcurve
     
     def mjd2hjd(lightCurve, rightAscension, declination, epoch):
@@ -150,6 +147,14 @@ def main(file, rightAscension, declination, decimalCoords, convertHjd, truncateH
         phasedLightCurve.sort(key = itemgetter(0))
         return phasedLightCurve
 
+    def getAmplitude(phasedCurve, windowSize = 51):
+        filteredPhasedCurve = savgol_filter([x[1] for x in phasedCurve], windowSize, 3)
+        plt.errorbar([x[0] for x in phasedLightCurve], [x[1] for x in phasedLightCurve], yerr = [x[2] for x in phasedLightCurve], fmt='o', label = 'Phased Light Curve')
+        plt.plot([x[0] for x in phasedCurve], filteredPhasedCurve, label = 'Filtered Phased Light Curve', zorder = 3)
+        plt.grid(axis = 'both', alpha = 0.75)
+        plt.gca().invert_yaxis()
+        plt.legend()
+
     def getPlots(lightCurve, rightAscension, declination, convertHjd, truncateHjd, phasedLightCurve, period, epoch):
         if period != None:
            fig, axs = plt.subplots(2, sharey = True)
@@ -178,8 +183,16 @@ def main(file, rightAscension, declination, decimalCoords, convertHjd, truncateH
             ax2.legend()
     
     def printLightCurve(lightCurve):
+        print('Light curve-')
+        print(f'{"Date":>11} {"Magnitude":>10} {"Uncertainty":>12}')
         for x in lightCurve:
-            print(x[0], x[1], x[2])
+            print(f'{x[0]:.5f} {x[1]:10.3f} {x[2]:12.7f}')
+    
+    def printPhasedLightCurve(phasedLightCurve):
+        print('Phased light curve-')
+        print(f'{"Standard Phase"} {"Magnitude":>10} {"Uncertainty":>12}')
+        for x in lightCurve:
+            print(f'{x[0]:14.5f} {x[1]:10.3f} {x[2]:12.7f}')
                 
     def saveLightCurve(lightCurve, rightAscension, declination, phased):
         os.chdir(sys.path[0])
@@ -190,7 +203,7 @@ def main(file, rightAscension, declination, decimalCoords, convertHjd, truncateH
         print(f"You can find a copy of the light curve named {filename} in the same directory as astroutils.py")
         np.savetxt(filename, lightCurve, fmt = '%.11f')
 
-    if not decimalCoords:
+    if rightAscension[6] == '.':
         rightAscension = float(''.join(rightAscension[:2])) * 15 + float(''.join(rightAscension[2:4])) * 0.25 + float(''.join(rightAscension[4:])) / 240
         declination = float(''.join(declination[:2])) + float(''.join(declination[2:4])) / 60 + float(''.join(declination[4:])) / 3600
     else:
@@ -206,6 +219,7 @@ def main(file, rightAscension, declination, decimalCoords, convertHjd, truncateH
         lightCurve = [[x[0], x[1], x[2]] for x in lightCurve]
     if period != None:
         phasedLightCurve = phaseLightCurve(lightCurve, period, epoch)
+        getAmplitude(phasedLightCurve, 101)
     if plot:
         if period != None:
             getPlots(lightCurve, rightAscension, declination, convertHjd, truncateHjd, phasedLightCurve, period, epoch)
@@ -216,21 +230,19 @@ def main(file, rightAscension, declination, decimalCoords, convertHjd, truncateH
         if period != None:
             saveLightCurve(phasedLightCurve, rightAscension, declination, True)
     if verbose:
-        print('Light curve:')
         printLightCurve(lightCurve)
         if period != None:
-            print('Phased light curve:')
-            printLightCurve(phasedLightCurve)           
+            printPhasedLightCurve(phasedLightCurve)           
 
 parser = argparse.ArgumentParser()
 parser.add_argument('file', help = 'Path to light curve file or match structure directory')
 parser.add_argument('rightAscension', help = 'Target object right ascension')
 parser.add_argument('declination', help = 'Target object declination')
-parser.add_argument('--decimalCoords', '-c', default = False, help = 'RA and Dec are in decimal form (True)')
 parser.add_argument('--convertHjd', '-hjd', default = False, help = 'Convert MJD dates to HJD (True)')
 parser.add_argument('--truncateHjd', '-t', default = False, help = 'Truncate HJD dates to HJD-2400000 (True)')
 parser.add_argument('--period', '-per', type = float, help = 'Period of phased light curve')
 parser.add_argument('--epoch', '-e', type = float, default = 0, help = 'Epoch of phased light curve')
+parser.add_argument('--nights', '-n', nargs = '+', type = int, default = None)
 parser.add_argument('--plot', '-p', default = True, help = 'Display plot of light curve/phased light curve (True)')
 parser.add_argument('--save', '-s', default = True, help = 'Save light curve/phased light curve to .dat files (True/False)')
 parser.add_argument('--verbose', '-v', default = False, help = 'Print light curve/phased light curve to terminal (True/False)')
@@ -238,13 +250,13 @@ args = parser.parse_args()
 file = args.file
 rightAscension = args.rightAscension
 declination = args.declination
-decimalCoords = evaluateBooleanArg(args.decimalCoords)
 convertHjd = evaluateBooleanArg(args.convertHjd)
 truncateHjd = evaluateBooleanArg(args.truncateHjd)
 period = args.period
 epoch = args.epoch
+nights = args.nights
 plot = evaluateBooleanArg(args.plot)
 save = evaluateBooleanArg(args.save)
 verbose = evaluateBooleanArg(args.verbose)
-main(file, rightAscension, declination, decimalCoords, convertHjd, truncateHjd, period, epoch, plot, save, verbose)
+main(file, rightAscension, declination, convertHjd, truncateHjd, period, epoch, plot, save, verbose)
 plt.show()
